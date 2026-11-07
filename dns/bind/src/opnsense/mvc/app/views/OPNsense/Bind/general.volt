@@ -99,6 +99,7 @@
                         <th data-column-id="retry" data-type="string" data-visible="true">{{ lang._('Retry') }}</th>
                         <th data-column-id="expire" data-type="string" data-visible="true">{{ lang._('Expire') }}</th>
                         <th data-column-id="negative" data-type="string" data-visible="true">{{ lang._('Negative TTL') }}</th>
+                        <th data-column-id="dynamic" data-type="string" data-formatter="boolean" data-visible="true">{{ lang._('Dynamic') }}</th>
                         <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">{{ lang._('ID') }}</th>
                         <th data-column-id="commands" data-width="9em" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
                     </tr>
@@ -123,11 +124,12 @@
             <table id="grid-primary-records" class="table table-condensed table-hover table-striped" data-editAlert="ChangeMessage" data-editDialog="dialogEditBindRecord">
                 <thead>
                 <tr>
-                    <th data-column-id="enabled" data-type="string" data-formatter="rowtoggle">{{ lang._('Enabled') }}</th>
+                    <th data-column-id="enabled" data-type="string" data-formatter="recordtoggle">{{ lang._('Enabled') }}</th>
                     <th data-column-id="domain" data-type="string" data-visible="true">{{ lang._('Zone') }}</th>
                     <th data-column-id="name" data-type="string" data-visible="true">{{ lang._('Name') }}</th>
                     <th data-column-id="type" data-type="string" data-visible="true">{{ lang._('Type') }}</th>
                     <th data-column-id="value" data-type="string" data-visible="true" data-css-class="long-str">{{ lang._('Value') }}</th>
+                    <th data-column-id="source" data-type="string" data-visible="true">{{ lang._('Source') }}</th>
                     <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">{{ lang._('ID') }}</th>
                     <th data-column-id="commands" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
                 </tr>
@@ -136,7 +138,7 @@
                 </tbody>
                 <tfoot>
                 <tr>
-                    <td colspan="5"></td>
+                    <td colspan="6"></td>
                     <td>
                         <button id="recordAddBtn" data-action="add" type="button" class="btn btn-xs btn-default"><span class="fa fa-plus"></span></button>
                         <button id="recordDelBtn" data-action="deleteSelected" type="button" class="btn btn-xs btn-default"><span class="fa fa-trash-o"></span></button>
@@ -498,6 +500,12 @@ $(document).ready(function() {
         'add': '/api/bind/record/add_record/',
         'del': '/api/bind/record/del_record/',
         'toggle': '/api/bind/record/toggle_record/',
+        // records written by dynamic update clients have no uuid and cannot be edited here
+        commands: {
+            edit: { filter: (cell) => cell.getData().source !== 'dynamic' },
+            copy: { filter: (cell) => cell.getData().source !== 'dynamic' },
+            delete: { filter: (cell) => cell.getData().source !== 'dynamic' }
+        },
         options: {
             useRequestHandlerOnGet: true,
             requestHandler: function(request) {
@@ -514,6 +522,15 @@ $(document).ready(function() {
                     $("#primary-record-area").hide();
                 }
                 return request;
+            },
+            formatters: {
+                recordtoggle: function (column, row) {
+                    if (row.source === 'dynamic') {
+                        return '<span class="fa fa-fw fa-lock bootgrid-tooltip" title="{{ lang._('Written by a dynamic update client') }}"></span>';
+                    }
+                    let icon = parseInt(row[column.id], 2) === 1 ? 'fa-check-square-o' : 'fa-square-o';
+                    return '<span style="cursor: pointer;" class="fa fa-fw ' + icon + ' command-toggle bootgrid-tooltip" data-value="' + row[column.id] + '" data-row-id="' + row.uuid + '"></span>';
+                }
             }
         }
     });
@@ -555,6 +572,20 @@ $(document).ready(function() {
         ajaxCall("/api/bind/service/reconfigure", {}, function(data, status) {
             updateServiceControlUI('bind');
             $(".saveAct_domain_progress").removeClass("fa fa-spinner fa-pulse");
+            if (data['status'] !== 'ok' && data['status_msg'] !== undefined) {
+                BootstrapDialog.show({
+                    type: BootstrapDialog.TYPE_WARNING,
+                    title: "{{ lang._('Error') }}",
+                    message: data['status_msg'],
+                    buttons: [{
+                        label: "{{ lang._('Close') }}",
+                        action: function(dlg) {
+                            dlg.close();
+                        }
+                    }]
+                });
+            }
+            $("#grid-primary-records").bootgrid('reload');
         });
     });
 

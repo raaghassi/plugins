@@ -34,6 +34,7 @@ use OPNsense\Base\ApiMutableServiceControllerBase;
 use OPNsense\Core\Backend;
 use OPNsense\Bind\General;
 use OPNsense\Bind\Dnsbl;
+use OPNsense\Bind\Domain;
 
 /**
  * Class ServiceController
@@ -52,5 +53,41 @@ class ServiceController extends ApiMutableServiceControllerBase
         $backend = new Backend();
         $response = $backend->configdpRun('bind dnsbl', [(string)$mdl->type]);
         return ['response' => $response];
+    }
+
+    /**
+     * Zones that switch to dynamic mode are captured from the running server before the template
+     * reload replaces their static zone file. Configured records are applied once named is up again.
+     * @return array status
+     */
+    public function reconfigureAction()
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+
+        $backend = new Backend();
+        foreach ((new Domain())->domains->domain->iterateItems() as $domain) {
+            if (
+                (string)$domain->enabled == '1' &&
+                (string)$domain->type == 'primary' &&
+                (string)$domain->dynamic == '1'
+            ) {
+                $backend->configdpRun('bind dynzone.capture', [(string)$domain->domainname]);
+            }
+        }
+
+        $result = parent::reconfigureAction();
+
+        if ($result['status'] == 'ok') {
+            $response = json_decode(trim($backend->configdRun('bind dynzone.reconcile')), true);
+            if (empty($response['status']) || $response['status'] != 'ok') {
+                $result['status'] = 'failed';
+                $result['status_msg'] = !empty($response['message']) ?
+                    $response['message'] : gettext('Applying the configured records to the dynamic zones failed.');
+            }
+        }
+
+        return $result;
     }
 }

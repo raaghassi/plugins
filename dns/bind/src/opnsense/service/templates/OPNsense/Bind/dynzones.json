@@ -1,0 +1,40 @@
+{#
+ # Input for scripts/OPNsense/Bind/dynzone.py: the RNDC key, the loopback
+ # endpoint of named and, for every primary zone in dynamic mode, the SOA
+ # parameters and the enabled records configured in the GUI.
+ # tojson() escapes <, >, & and ' as \uXXXX sequences, which is valid JSON.
+ #}
+{% set data = {'key': {}, 'server': {}, 'zones': {}} %}
+{% if helpers.exists('OPNsense.bind.general.rndcalgo') and helpers.exists('OPNsense.bind.general.rndcsecret') %}
+{%   do data['key'].update({'name': 'rndc-key', 'algorithm': OPNsense.bind.general.rndcalgo, 'secret': OPNsense.bind.general.rndcsecret}) %}
+{% endif %}
+{% do data['server'].update({'address': '127.0.0.1', 'port': OPNsense.bind.general.port|int}) %}
+{% if helpers.exists('OPNsense.bind.domain.domains.domain') %}
+{%   for domain in helpers.toList('OPNsense.bind.domain.domains.domain') %}
+{%     if domain.type == 'primary' and domain.dynamic is defined and domain.dynamic == '1' %}
+{%       set records = [] %}
+{%       if helpers.exists('OPNsense.bind.record.records.record') %}
+{%         for record in helpers.toList('OPNsense.bind.record.records.record') %}
+{%           if record.domain == domain['@uuid'] and record.enabled == '1' %}
+{%             do records.append({'name': record.name|default('', true), 'type': record.type, 'value': record.value|default('', true)}) %}
+{%           endif %}
+{%         endfor %}
+{%       endif %}
+{%       do data['zones'].update({domain.domainname: {
+           'uuid': domain['@uuid'],
+           'enabled': domain.enabled,
+           'ttl': domain.ttl|int,
+           'soa': {
+             'mname': domain.dnsserver,
+             'rname': domain.mailadmin|replace('@', '.'),
+             'refresh': domain.refresh|int,
+             'retry': domain.retry|int,
+             'expire': domain.expire|int,
+             'minimum': domain.negative|int
+           },
+           'records': records
+         }}) %}
+{%     endif %}
+{%   endfor %}
+{% endif %}
+{{ data|tojson(indent=2) }}
