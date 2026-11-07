@@ -16,7 +16,7 @@
 {%       if helpers.exists('OPNsense.bind.record.records.record') %}
 {%         for record in helpers.toList('OPNsense.bind.record.records.record') %}
 {%           if record.domain == domain['@uuid'] and record.enabled == '1' %}
-{%             do records.append({'name': record.name|default('', true), 'type': record.type, 'value': record.value|default('', true)}) %}
+{%             do records.append({'uuid': record['@uuid'], 'name': record.name|default('', true), 'type': record.type, 'value': record.value|default('', true)}) %}
 {%           endif %}
 {%         endfor %}
 {%       endif %}

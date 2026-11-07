@@ -81,7 +81,10 @@ class ServiceController extends ApiMutableServiceControllerBase
 
         if ($result['status'] == 'ok') {
             $response = json_decode(trim($backend->configdRun('bind dynzone.reconcile')), true);
-            if (empty($response['status']) || $response['status'] != 'ok') {
+            if (!empty($response['status']) && $response['status'] == 'warning') {
+                /* named is up and configured records are applied, but conflicts wait for the operator */
+                $result['status_msg'] = $response['message'];
+            } elseif (empty($response['status']) || $response['status'] != 'ok') {
                 $result['status'] = 'failed';
                 $result['status_msg'] = !empty($response['message']) ?
                     $response['message'] : gettext('Applying the configured records to the dynamic zones failed.');

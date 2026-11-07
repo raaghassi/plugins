@@ -39,7 +39,7 @@
         <id>domain.dynamic</id>
         <label>Dynamic zone</label>
         <type>checkbox</type>
-        <help>Let BIND own this zone. The plugin writes the zone file once, to /usr/local/etc/namedb/dynamic, and never rewrites it. Records that clients add with dynamic updates (RFC 2136), for example a DHCP server, survive restarts and configuration changes. The records configured here are applied to the running zone with dynamic updates, and the records grid shows the live zone. The RNDC key is granted zone transfer and update access for this purpose. BIND manages the serial number.</help>
+        <help>Let BIND own this zone. The plugin writes the zone file once, to /usr/local/etc/namedb/dynamic, and never rewrites it. Records that clients add with dynamic updates (RFC 2136), for example a DHCP server, survive restarts and configuration changes. The records configured here are applied to the running zone with dynamic updates, and the records grid shows the live zone. The RNDC key is granted zone transfer and update access for this purpose. BIND manages the serial number. When the zone and the configuration hold different data for the same name and type, nothing is changed: the records grid marks the conflict and offers to adopt the zone value into the configuration or to overwrite the zone with the configured value.</help>
     </field>
     <field>
         <id>domain.ttl</id>

@@ -32,7 +32,10 @@
     usage: dynzone.py bootstrap         create missing zone files, runs before named starts
            dynzone.py capture <zone>    copy a loaded static zone, journal included, before it turns dynamic
            dynzone.py reconcile         apply configured records and SOA parameters to the running zones
-           dynzone.py list <zone>       print the live zone as JSON rows tagged "config" or "dynamic"
+           dynzone.py list <zone>       print the live zone as JSON rows tagged "config" or "dynamic",
+                                        plus the (name, type) conflicts between the two
+           dynzone.py overwrite <zone> <name> <type>
+                                        operator decision for one conflict: the zone takes the configured data
 """
 import json
 import os
@@ -242,8 +245,34 @@ def configured_records(zone_cfg, origin):
         except (dns.exception.DNSException, ValueError) as error:
             errors.append('%s %s %s: %s' % (record['name'] or '@', record['type'], record['value'], error))
             continue
-        result[rr_key(name, rdata)] = (name, zone_cfg['ttl'], rdata)
+        result[rr_key(name, rdata)] = (name, zone_cfg['ttl'], rdata, record.get('uuid', ''))
     return result, errors
+
+
+def find_conflicts(live, wanted):
+    """ owner name and type pairs that exist on both sides with different data. Neither side is changed
+        for these until the operator decides (adopt or overwrite).
+    """
+    live_pairs = {}
+    for key in live:
+        live_pairs.setdefault((key[0], key[1]), set()).add(key[2])
+    wanted_pairs = {}
+    for key, item in wanted.items():
+        wanted_pairs.setdefault((key[0], key[1]), {})[key[2]] = item[3]
+    conflicts = {}
+    for owner in set(live_pairs) & set(wanted_pairs):
+        if live_pairs[owner] != set(wanted_pairs[owner]):
+            conflicts[owner] = {'live': live_pairs[owner], 'config': wanted_pairs[owner]}
+    return conflicts
+
+
+def describe_conflicts(conflicts, origin):
+    return [{
+        'name': dns.name.from_text(owner[0]).relativize(origin).to_text(),
+        'type': owner[1],
+        'live': sorted(data['live']),
+        'config': [{'uuid': uuid, 'value': value} for value, uuid in sorted(data['config'].items())],
+    } for owner, data in sorted(conflicts.items())]
 
 
 def read_state(zone):
@@ -281,10 +310,25 @@ def soa_differs(live, wanted):
         (wanted.mname, wanted.rname, wanted.refresh, wanted.retry, wanted.expire, wanted.minimum)
 
 
+def send_update(cfg, origin, adds, dels, soa=None, soa_ttl=None):
+    keyring, keyname, algorithm = keyring_for(cfg)
+    update = dns.update.UpdateMessage(origin, keyring=keyring, keyname=keyname, keyalgorithm=algorithm)
+    for name, ttl, rdata in dels:
+        update.delete(name, rdata)
+    for name, ttl, rdata, _ in adds:
+        update.add(name, ttl, rdata)
+    if soa is not None:
+        update.replace(origin, soa_ttl, soa)
+    response = dns.query.tcp(update, cfg['server']['address'], port=cfg['server']['port'], timeout=10)
+    if response.rcode() != dns.rcode.NOERROR:
+        raise RuntimeError('update refused: %s' % dns.rcode.to_text(response.rcode()))
+
+
 def reconcile_zone(cfg, zone, zone_cfg):
     """ send one dynamic update that adds missing configured records, removes records this tool applied
         earlier that are no longer configured, and replaces the SOA when its parameters changed.
-        Records written by other RFC 2136 clients are never touched.
+        Records written by other RFC 2136 clients are never touched, and owner name and type pairs
+        in conflict are left alone and reported.
     """
     if not wait_loaded(zone):
         raise RuntimeError('zone is not loaded')
@@ -292,33 +336,50 @@ def reconcile_zone(cfg, zone, zone_cfg):
     origin = zone_obj.origin
     live = live_records(zone_obj)
     wanted, errors = configured_records(zone_cfg, origin)
+    conflicts = find_conflicts(live, wanted)
     applied = read_state(zone)
-    adds = [wanted[key] for key in wanted if key not in live]
+    adds = [wanted[key] for key in wanted if key not in live and (key[0], key[1]) not in conflicts]
     dels = [live[key] for key in applied if key in live and key not in wanted]
     soa_rdataset = zone_obj.get_rdataset(origin, dns.rdatatype.SOA)
     live_soa = soa_rdataset[0]
     new_soa = wanted_soa(zone_cfg, origin, live_soa.serial + 1)
     soa_update = soa_differs(live_soa, new_soa) or soa_rdataset.ttl != zone_cfg['ttl']
     if adds or dels or soa_update:
-        keyring, keyname, algorithm = keyring_for(cfg)
-        update = dns.update.UpdateMessage(origin, keyring=keyring, keyname=keyname, keyalgorithm=algorithm)
-        for name, ttl, rdata in dels:
-            update.delete(name, rdata)
-        for name, ttl, rdata in adds:
-            update.add(name, ttl, rdata)
-        if soa_update:
-            update.replace(origin, zone_cfg['ttl'], new_soa)
-        response = dns.query.tcp(update, cfg['server']['address'], port=cfg['server']['port'], timeout=10)
-        if response.rcode() != dns.rcode.NOERROR:
-            raise RuntimeError('update refused: %s' % dns.rcode.to_text(response.rcode()))
-    write_state(zone, set(wanted.keys()))
+        send_update(cfg, origin, adds, dels, new_soa if soa_update else None, zone_cfg['ttl'])
+    write_state(zone, {key for key in wanted if (key[0], key[1]) not in conflicts})
     return {
-        'status': 'ok' if not errors else 'warning',
+        'status': 'ok' if not errors and not conflicts else 'warning',
         'added': len(adds),
         'deleted': len(dels),
         'soa_updated': soa_update,
+        'conflicts': describe_conflicts(conflicts, origin),
         'errors': errors,
     }
+
+
+def overwrite(cfg, zone, name, rtype):
+    """ operator decision for one conflicting owner name and type: the zone takes the configured data,
+        records of that name and type beyond the configuration are deleted.
+    """
+    if zone not in cfg['zones']:
+        raise RuntimeError('%s is not a dynamic zone' % zone)
+    if not wait_loaded(zone):
+        raise RuntimeError('zone is not loaded')
+    zone_obj = transfer(cfg, zone)
+    origin = zone_obj.origin
+    owner = (dns.name.from_text(name, origin).to_text(), dns.rdatatype.to_text(dns.rdatatype.from_text(rtype)))
+    live = {key: item for key, item in live_records(zone_obj).items() if (key[0], key[1]) == owner}
+    wanted, _ = configured_records(cfg['zones'][zone], origin)
+    wanted = {key: item for key, item in wanted.items() if (key[0], key[1]) == owner}
+    if not wanted:
+        raise RuntimeError('no configured record for %s %s' % (name, rtype))
+    adds = [wanted[key] for key in wanted if key not in live]
+    dels = [live[key] for key in live if key not in wanted]
+    if adds or dels:
+        send_update(cfg, origin, adds, dels)
+    write_state(zone, read_state(zone) | set(wanted.keys()))
+    syslog.syslog(syslog.LOG_NOTICE, 'dynamic zone %s: operator overwrote %s %s (+%d/-%d)' % (zone, name, rtype, len(adds), len(dels)))
+    return {'added': len(adds), 'deleted': len(dels)}
 
 
 def reconcile(cfg):
@@ -332,6 +393,9 @@ def reconcile(cfg):
             results[zone] = reconcile_zone(cfg, zone, zone_cfg)
             if results[zone]['added'] or results[zone]['deleted'] or results[zone]['soa_updated']:
                 syslog.syslog(syslog.LOG_NOTICE, 'dynamic zone %s: %s' % (zone, json.dumps(results[zone])))
+            if results[zone]['conflicts']:
+                syslog.syslog(syslog.LOG_WARNING, 'dynamic zone %s: %d record conflict(s) left for the operator' % (
+                    zone, len(results[zone]['conflicts'])))
         except (RuntimeError, OSError, dns.exception.DNSException) as error:
             results[zone] = {'status': 'failed', 'message': str(error)}
             syslog.syslog(syslog.LOG_ERR, 'dynamic zone %s: %s' % (zone, error))
@@ -346,18 +410,24 @@ def list_zone(cfg, zone):
     zone_obj = transfer(cfg, zone)
     origin = zone_obj.origin
     wanted, _ = configured_records(cfg['zones'][zone], origin)
+    live = live_records(zone_obj)
+    conflicts = find_conflicts(live, wanted)
     rows = []
-    for name, ttl, rdata in zone_obj.iterate_rdatas():
-        if rdata.rdtype == dns.rdatatype.SOA:
-            continue
+    for key, (name, ttl, rdata) in live.items():
         rows.append({
             'name': name.relativize(origin).to_text(),
-            'type': dns.rdatatype.to_text(rdata.rdtype),
+            'type': key[1],
             'ttl': ttl,
-            'value': rdata.to_text(),
-            'source': 'config' if rr_key(name, rdata) in wanted else 'dynamic',
+            'value': key[2],
+            'source': 'config' if key in wanted else 'dynamic',
+            'conflict': '1' if (key[0], key[1]) in conflicts else '0',
         })
-    return {'zone': zone, 'serial': zone_obj.get_rdataset(origin, dns.rdatatype.SOA)[0].serial, 'rows': rows}
+    return {
+        'zone': zone,
+        'serial': zone_obj.get_rdataset(origin, dns.rdatatype.SOA)[0].serial,
+        'rows': rows,
+        'conflicts': describe_conflicts(conflicts, origin),
+    }
 
 
 def main():
@@ -376,8 +446,15 @@ def main():
                 output['message'] = 'applying records failed for: %s' % ', '.join(
                     zone for zone, result in output['zones'].items() if result['status'] == 'failed'
                 )
+            elif any(result['status'] == 'warning' for result in output['zones'].values()):
+                output['status'] = 'warning'
+                output['message'] = 'record conflicts or invalid records left for the operator in: %s' % ', '.join(
+                    zone for zone, result in output['zones'].items() if result['status'] == 'warning'
+                )
         elif command == 'list' and len(sys.argv) == 3:
             output.update(list_zone(load_config(), sys.argv[2]))
+        elif command == 'overwrite' and len(sys.argv) == 5:
+            output.update(overwrite(load_config(), sys.argv[2], sys.argv[3], sys.argv[4]))
         else:
             print(__doc__.split('usage:', 1)[1].rstrip(), file=sys.stderr)
             sys.exit(2)

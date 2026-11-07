@@ -87,8 +87,38 @@ class RecordController extends ApiMutableModelControllerBase
     }
 
     /**
+     * @param string $uuid zone uuid
+     * @return \OPNsense\Base\FieldTypes\ArrayField|null the zone when it exists and is in dynamic mode
+     */
+    private function getDynamicDomain($uuid)
+    {
+        $domainNode = empty($uuid) ? null : (new Domain())->getNodeByReference('domains.domain.' . $uuid);
+        if (
+            $domainNode !== null &&
+            (string)$domainNode->type == 'primary' &&
+            (string)$domainNode->dynamic == '1'
+        ) {
+            return $domainNode;
+        }
+        return null;
+    }
+
+    /**
+     * Live view of a zone in dynamic mode, including the (name, type) conflicts between the running
+     * zone and the configured records.
+     * @param string $domainName zone name
+     * @return array rows and conflicts as returned by the backend, empty when named cannot be reached
+     */
+    private function liveZone($domainName)
+    {
+        $live = json_decode(trim((new Backend())->configdpRun('bind dynzone.list', [$domainName])), true);
+        return is_array($live) ? $live : [];
+    }
+
+    /**
      * Records of a zone in dynamic mode: the configured records, plus the records the running zone
      * holds that were written by dynamic update clients. The latter carry no uuid and are read-only.
+     * Rows whose name and type carry different data on the two sides are flagged as conflicts.
      * @param \OPNsense\Base\FieldTypes\ArrayField $domainNode zone
      * @return array grid data
      */
@@ -96,13 +126,22 @@ class RecordController extends ApiMutableModelControllerBase
     {
         $domainUuid = $domainNode->getAttribute('uuid');
         $domainName = (string)$domainNode->domainname;
+        $live = $this->liveZone($domainName);
+        $conflictUuids = [];
+        foreach ($live['conflicts'] ?? [] as $conflict) {
+            foreach ($conflict['config'] as $item) {
+                $conflictUuids[$item['uuid']] = true;
+            }
+        }
+
         $rows = [];
         foreach ($this->getModel()->records->record->iterateItems() as $record) {
             if ((string)$record->domain != $domainUuid) {
                 continue;
             }
+            $uuid = $record->getAttribute('uuid');
             $rows[] = [
-                'uuid' => $record->getAttribute('uuid'),
+                'uuid' => $uuid,
                 'enabled' => (string)$record->enabled,
                 'domain' => $domainUuid,
                 '%domain' => $domainName,
@@ -110,10 +149,10 @@ class RecordController extends ApiMutableModelControllerBase
                 'type' => (string)$record->type,
                 'value' => (string)$record->value,
                 'source' => 'config',
+                'conflict' => isset($conflictUuids[$uuid]) ? '1' : '0',
             ];
         }
 
-        $live = json_decode(trim((new Backend())->configdpRun('bind dynzone.list', [$domainName])), true);
         foreach ($live['rows'] ?? [] as $row) {
             if ($row['source'] == 'dynamic') {
                 $rows[] = [
@@ -125,11 +164,115 @@ class RecordController extends ApiMutableModelControllerBase
                     'type' => $row['type'],
                     'value' => $row['value'],
                     'source' => 'dynamic',
+                    'conflict' => $row['conflict'],
                 ];
             }
         }
 
-        return $this->searchRecordsetBase($rows, ['enabled', 'domain', 'name', 'type', 'value', 'source'], 'name');
+        return $this->searchRecordsetBase(
+            $rows,
+            ['enabled', 'domain', 'name', 'type', 'value', 'source', 'conflict'],
+            'name'
+        );
+    }
+
+    /**
+     * Operator decision for a record conflict in a zone in dynamic mode: the configured records take the
+     * data the running zone holds for this owner name and type. Written through the model like
+     * add/set/del, so the change waits for Apply like any other edit.
+     * POST: domain (zone uuid), name, type
+     * @return array result
+     */
+    public function adoptRecordAction()
+    {
+        $result = ['result' => 'failed'];
+        if (!$this->request->isPost()) {
+            return $result;
+        }
+        $domainNode = $this->getDynamicDomain($this->request->getPost('domain'));
+        if ($domainNode === null) {
+            $result['message'] = gettext('Zone not found or not in dynamic mode.');
+            return $result;
+        }
+        $name = (string)$this->request->getPost('name');
+        $type = (string)$this->request->getPost('type');
+        $conflict = null;
+        foreach ($this->liveZone((string)$domainNode->domainname)['conflicts'] ?? [] as $item) {
+            if ($item['name'] == $name && $item['type'] == $type) {
+                $conflict = $item;
+            }
+        }
+        if ($conflict === null) {
+            $result['message'] = gettext('No conflict found for this record.');
+            return $result;
+        }
+
+        Config::getInstance()->lock();
+        $mdl = $this->getModel();
+        $configured = [];
+        foreach ($conflict['config'] as $item) {
+            $configured[$item['value']] = $item['uuid'];
+        }
+        if (count($configured) == 1 && count($conflict['live']) == 1) {
+            $node = $mdl->getRecord(reset($configured));
+            if ($node !== null) {
+                $node->value = $conflict['live'][0];
+            }
+        } else {
+            foreach ($configured as $value => $uuid) {
+                if (!in_array($value, $conflict['live'])) {
+                    $mdl->records->record->del($uuid);
+                }
+            }
+            foreach ($conflict['live'] as $value) {
+                if (!isset($configured[$value])) {
+                    $node = $mdl->records->record->Add();
+                    $node->enabled = '1';
+                    $node->domain = $domainNode->getAttribute('uuid');
+                    $node->name = $name;
+                    $node->type = $type;
+                    $node->value = $value;
+                }
+            }
+        }
+        $result = $this->validate();
+        if (empty($result['validations'])) {
+            $this->save(false, true);
+            $result = ['result' => 'saved'];
+        } else {
+            $result['result'] = 'failed';
+        }
+        return $result;
+    }
+
+    /**
+     * Operator decision for a record conflict in a zone in dynamic mode: the running zone takes the
+     * configured data for this owner name and type. Nothing is written to the configuration.
+     * POST: domain (zone uuid), name, type
+     * @return array result
+     */
+    public function overwriteRecordAction()
+    {
+        $result = ['result' => 'failed'];
+        if (!$this->request->isPost()) {
+            return $result;
+        }
+        $domainNode = $this->getDynamicDomain($this->request->getPost('domain'));
+        if ($domainNode === null) {
+            $result['message'] = gettext('Zone not found or not in dynamic mode.');
+            return $result;
+        }
+        $response = json_decode(trim((new Backend())->configdpRun('bind dynzone.overwrite', [
+            (string)$domainNode->domainname,
+            (string)$this->request->getPost('name'),
+            (string)$this->request->getPost('type'),
+        ])), true);
+        if (!empty($response['status']) && $response['status'] == 'ok') {
+            $result = ['result' => 'saved', 'added' => $response['added'], 'deleted' => $response['deleted']];
+        } else {
+            $result['message'] = $response['message'] ?? gettext('The zone could not be updated.');
+        }
+        return $result;
     }
 
     public function getRecordAction($uuid = null)

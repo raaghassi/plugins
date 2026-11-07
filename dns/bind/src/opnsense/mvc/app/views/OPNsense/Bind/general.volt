@@ -129,7 +129,8 @@
                     <th data-column-id="name" data-type="string" data-visible="true">{{ lang._('Name') }}</th>
                     <th data-column-id="type" data-type="string" data-visible="true">{{ lang._('Type') }}</th>
                     <th data-column-id="value" data-type="string" data-visible="true" data-css-class="long-str">{{ lang._('Value') }}</th>
-                    <th data-column-id="source" data-type="string" data-visible="true">{{ lang._('Source') }}</th>
+                    <th data-column-id="source" data-type="string" data-formatter="recordsource" data-visible="true">{{ lang._('Source') }}</th>
+                    <th data-column-id="conflict" data-type="string" data-visible="false">{{ lang._('Conflict') }}</th>
                     <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">{{ lang._('ID') }}</th>
                     <th data-column-id="commands" data-formatter="commands" data-sortable="false">{{ lang._('Commands') }}</th>
                 </tr>
@@ -362,6 +363,54 @@ function zone_show(payload) {
     });
 }
 
+/**
+ * resolve a record conflict in a dynamic zone: 'adopt' writes the zone value into the configuration,
+ * 'overwrite' writes the configured value into the running zone
+ */
+function record_conflict(action, row) {
+    let question = action === 'adopt'
+        ? "{{ lang._('Replace the configured value of %s %s with the zone value?') }}"
+        : "{{ lang._('Replace the zone data of %s %s with the configured value? Other dynamic update clients may write it again.') }}";
+    question = question.replace('%s', row.name).replace('%s', row.type);
+    BootstrapDialog.show({
+        type: action === 'adopt' ? BootstrapDialog.TYPE_PRIMARY : BootstrapDialog.TYPE_WARNING,
+        title: action === 'adopt' ? "{{ lang._('Adopt zone value') }}" : "{{ lang._('Overwrite zone record') }}",
+        message: question,
+        buttons: [{
+            label: "{{ lang._('Cancel') }}",
+            action: function(dlg) {
+                dlg.close();
+            }
+        }, {
+            label: "{{ lang._('Confirm') }}",
+            cssClass: 'btn-primary',
+            action: function(dlg) {
+                dlg.close();
+                ajaxCall("/api/bind/record/" + action + "_record", {domain: row.domain, name: row.name, type: row.type}, function(data, status) {
+                    if (data['result'] === 'saved') {
+                        if (action === 'adopt') {
+                            $("#ChangeMessage").slideDown();
+                        }
+                    } else {
+                        BootstrapDialog.show({
+                            type: BootstrapDialog.TYPE_DANGER,
+                            title: "{{ lang._('Error') }}",
+                            message: data['message'] !== undefined ? data['message'] : "{{ lang._('The record could not be changed.') }}",
+                            buttons: [{
+                                label: "{{ lang._('Close') }}",
+                                action: function(dlg) {
+                                    dlg.close();
+                                }
+                            }]
+                        });
+                    }
+                    $("#grid-primary-records").bootgrid('reload');
+                });
+            }
+        }]
+    });
+}
+
 function zone_copy(dlg) {
     $('#copy-progress').show();
     let conf_to_clipboard = [];
@@ -500,11 +549,26 @@ $(document).ready(function() {
         'add': '/api/bind/record/add_record/',
         'del': '/api/bind/record/del_record/',
         'toggle': '/api/bind/record/toggle_record/',
-        // records written by dynamic update clients have no uuid and cannot be edited here
+        // records written by dynamic update clients have no uuid and cannot be edited here; when such a
+        // record conflicts with a configured one, the operator decides which side wins
         commands: {
             edit: { filter: (cell) => cell.getData().source !== 'dynamic' },
             copy: { filter: (cell) => cell.getData().source !== 'dynamic' },
-            delete: { filter: (cell) => cell.getData().source !== 'dynamic' }
+            delete: { filter: (cell) => cell.getData().source !== 'dynamic' },
+            adopt: {
+                title: "{{ lang._('Adopt: the configured record takes this zone value') }}",
+                classname: 'fa fa-fw fa-download',
+                sequence: 300,
+                filter: (cell) => cell.getData().source === 'dynamic' && cell.getData().conflict === '1',
+                method: (event, cell) => record_conflict('adopt', cell.getData())
+            },
+            overwrite: {
+                title: "{{ lang._('Overwrite: this zone record takes the configured value') }}",
+                classname: 'fa fa-fw fa-upload',
+                sequence: 310,
+                filter: (cell) => cell.getData().source === 'dynamic' && cell.getData().conflict === '1',
+                method: (event, cell) => record_conflict('overwrite', cell.getData())
+            }
         },
         options: {
             useRequestHandlerOnGet: true,
@@ -530,6 +594,13 @@ $(document).ready(function() {
                     }
                     let icon = parseInt(row[column.id], 2) === 1 ? 'fa-check-square-o' : 'fa-square-o';
                     return '<span style="cursor: pointer;" class="fa fa-fw ' + icon + ' command-toggle bootgrid-tooltip" data-value="' + row[column.id] + '" data-row-id="' + row.uuid + '"></span>';
+                },
+                recordsource: function (column, row) {
+                    let text = row.source === 'dynamic' ? "{{ lang._('dynamic') }}" : "{{ lang._('config') }}";
+                    if (row.conflict === '1') {
+                        text += ' <span class="fa fa-fw fa-exclamation-triangle text-warning bootgrid-tooltip" title="{{ lang._('The zone and the configuration hold different data for this name and type') }}"></span>';
+                    }
+                    return text;
                 }
             }
         }
@@ -572,9 +643,9 @@ $(document).ready(function() {
         ajaxCall("/api/bind/service/reconfigure", {}, function(data, status) {
             updateServiceControlUI('bind');
             $(".saveAct_domain_progress").removeClass("fa fa-spinner fa-pulse");
-            if (data['status'] !== 'ok' && data['status_msg'] !== undefined) {
+            if (data['status_msg'] !== undefined) {
                 BootstrapDialog.show({
-                    type: BootstrapDialog.TYPE_WARNING,
+                    type: data['status'] === 'ok' ? BootstrapDialog.TYPE_WARNING : BootstrapDialog.TYPE_DANGER,
                     title: "{{ lang._('Error') }}",
                     message: data['status_msg'],
                     buttons: [{
