@@ -127,7 +127,8 @@ class RecordController extends ApiMutableModelControllerBase
 
     /**
      * Records of a zone in dynamic mode: the configured records, plus the records the running zone
-     * holds that were written by dynamic update clients. The latter carry no uuid and are read-only.
+     * holds that were written by dynamic update clients or that await removal. These carry no uuid
+     * and are read-only.
      * Rows whose name and type carry different data on the two sides are flagged as conflicts.
      * @param \OPNsense\Base\FieldTypes\ArrayField $domainNode zone
      * @return array grid data
@@ -164,7 +165,8 @@ class RecordController extends ApiMutableModelControllerBase
         }
 
         foreach ($live['rows'] ?? [] as $row) {
-            if ($row['source'] == 'dynamic') {
+            /* dynamic: written by another update client; stale: applied earlier, removed at the next Apply */
+            if ($row['source'] != 'config') {
                 $rows[] = [
                     'uuid' => '',
                     'enabled' => '1',
@@ -173,7 +175,7 @@ class RecordController extends ApiMutableModelControllerBase
                     'name' => $row['name'],
                     'type' => $row['type'],
                     'value' => $row['value'],
-                    'source' => 'dynamic',
+                    'source' => $row['source'],
                     'conflict' => $row['conflict'],
                 ];
             }

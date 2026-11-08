@@ -552,9 +552,9 @@ $(document).ready(function() {
         // records written by dynamic update clients have no uuid and cannot be edited here; when such a
         // record conflicts with a configured one, the operator decides which side wins
         commands: {
-            edit: { filter: (cell) => cell.getData().source !== 'dynamic' },
-            copy: { filter: (cell) => cell.getData().source !== 'dynamic' },
-            delete: { filter: (cell) => cell.getData().source !== 'dynamic' },
+            edit: { filter: (cell) => cell.getData().source === 'config' },
+            copy: { filter: (cell) => cell.getData().source === 'config' },
+            delete: { filter: (cell) => cell.getData().source === 'config' },
             adopt: {
                 title: "{{ lang._('Adopt: the configured record takes this zone value') }}",
                 classname: 'fa fa-fw fa-download',
@@ -592,11 +592,15 @@ $(document).ready(function() {
                     if (row.source === 'dynamic') {
                         return '<span class="fa fa-fw fa-lock bootgrid-tooltip" title="{{ lang._('Written by a dynamic update client') }}"></span>';
                     }
+                    if (row.source === 'stale') {
+                        return '<span class="fa fa-fw fa-clock-o bootgrid-tooltip" title="{{ lang._('Applied earlier, removed at the next Apply') }}"></span>';
+                    }
                     let icon = parseInt(row[column.id], 2) === 1 ? 'fa-check-square-o' : 'fa-square-o';
                     return '<span style="cursor: pointer;" class="fa fa-fw ' + icon + ' command-toggle bootgrid-tooltip" data-value="' + row[column.id] + '" data-row-id="' + row.uuid + '"></span>';
                 },
                 recordsource: function (column, row) {
-                    let text = row.source === 'dynamic' ? "{{ lang._('dynamic') }}" : "{{ lang._('config') }}";
+                    let labels = {dynamic: "{{ lang._('dynamic') }}", stale: "{{ lang._('pending removal') }}", config: "{{ lang._('config') }}"};
+                    let text = labels[row.source] !== undefined ? labels[row.source] : row.source;
                     if (row.conflict === '1') {
                         text += ' <span class="fa fa-fw fa-exclamation-triangle text-warning bootgrid-tooltip" title="{{ lang._('The zone and the configuration hold different data for this name and type') }}"></span>';
                     }

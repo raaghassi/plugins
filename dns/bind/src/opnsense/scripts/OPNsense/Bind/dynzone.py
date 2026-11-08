@@ -32,8 +32,8 @@
     usage: dynzone.py bootstrap         create missing zone files, runs before named starts
            dynzone.py capture <zone>    copy a loaded static zone, journal included, before it turns dynamic
            dynzone.py reconcile         apply configured records and SOA parameters to the running zones
-           dynzone.py list <zone>       print the live zone as JSON rows tagged "config" or "dynamic",
-                                        plus the (name, type) conflicts between the two
+           dynzone.py list <zone>       print the live zone as JSON rows tagged "config", "stale" or
+                                        "dynamic", plus the (name, type) conflicts with foreign records
            dynzone.py overwrite <zone> <name> <type>
                                         operator decision for one conflict: the zone takes the configured data
 """
@@ -249,13 +249,16 @@ def configured_records(zone_cfg, origin):
     return result, errors
 
 
-def find_conflicts(live, wanted):
-    """ owner name and type pairs that exist on both sides with different data. Neither side is changed
-        for these until the operator decides (adopt or overwrite).
+def find_conflicts(live, wanted, applied):
+    """ owner name and type pairs where the configuration and records written by OTHER update clients
+        hold different data. Records this tool applied earlier are ours, not foreign: a configured
+        record whose value changed is swapped by reconcile, not reported. Neither side of a conflict
+        is changed until the operator decides (adopt or overwrite).
     """
     live_pairs = {}
     for key in live:
-        live_pairs.setdefault((key[0], key[1]), set()).add(key[2])
+        if key not in applied:
+            live_pairs.setdefault((key[0], key[1]), set()).add(key[2])
     wanted_pairs = {}
     for key, item in wanted.items():
         wanted_pairs.setdefault((key[0], key[1]), {})[key[2]] = item[3]
@@ -336,8 +339,8 @@ def reconcile_zone(cfg, zone, zone_cfg):
     origin = zone_obj.origin
     live = live_records(zone_obj)
     wanted, errors = configured_records(zone_cfg, origin)
-    conflicts = find_conflicts(live, wanted)
     applied = read_state(zone)
+    conflicts = find_conflicts(live, wanted, applied)
     adds = [wanted[key] for key in wanted if key not in live and (key[0], key[1]) not in conflicts]
     dels = [live[key] for key in applied if key in live and key not in wanted]
     soa_rdataset = zone_obj.get_rdataset(origin, dns.rdatatype.SOA)
@@ -411,16 +414,20 @@ def list_zone(cfg, zone):
     origin = zone_obj.origin
     wanted, _ = configured_records(cfg['zones'][zone], origin)
     live = live_records(zone_obj)
-    conflicts = find_conflicts(live, wanted)
+    applied = read_state(zone)
+    conflicts = find_conflicts(live, wanted, applied)
     rows = []
     for key, (name, ttl, rdata) in live.items():
+        # config: configured and live; stale: applied by this tool earlier, no longer configured, removed
+        # at the next Apply; dynamic: written by another update client
+        source = 'config' if key in wanted else ('stale' if key in applied else 'dynamic')
         rows.append({
             'name': name.relativize(origin).to_text(),
             'type': key[1],
             'ttl': ttl,
             'value': key[2],
-            'source': 'config' if key in wanted else 'dynamic',
-            'conflict': '1' if (key[0], key[1]) in conflicts else '0',
+            'source': source,
+            'conflict': '1' if source == 'dynamic' and (key[0], key[1]) in conflicts else '0',
         })
     return {
         'zone': zone,
