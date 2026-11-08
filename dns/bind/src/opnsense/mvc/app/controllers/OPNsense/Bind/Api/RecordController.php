@@ -111,7 +111,7 @@ class RecordController extends ApiMutableModelControllerBase
      */
     private function liveZone($domainName)
     {
-        $live = json_decode(trim((new Backend())->configdpRun('bind dynzone.list', [$domainName])), true);
+        $live = json_decode(trim((new Backend())->configdpRun('bind dynzone list', [$domainName])), true);
         return is_array($live) ? $live : [];
     }
 
@@ -262,7 +262,7 @@ class RecordController extends ApiMutableModelControllerBase
             $result['message'] = gettext('Zone not found or not in dynamic mode.');
             return $result;
         }
-        $response = json_decode(trim((new Backend())->configdpRun('bind dynzone.overwrite', [
+        $response = json_decode(trim((new Backend())->configdpRun('bind dynzone overwrite', [
             (string)$domainNode->domainname,
             (string)$this->request->getPost('name'),
             (string)$this->request->getPost('type'),

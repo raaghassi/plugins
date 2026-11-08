@@ -96,7 +96,7 @@ function bind_configure_do($verbose)
 
     configd_run('template reload OPNsense/Bind');
     configd_run('bind restart');
-    configd_run('bind dynzone.reconcile');
+    configd_run('bind dynzone reconcile');
 
     service_log("done.\n", $verbose);
 }

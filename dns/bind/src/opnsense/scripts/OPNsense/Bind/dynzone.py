@@ -460,8 +460,9 @@ def main():
             sys.exit(2)
     except (OSError, ValueError, RuntimeError, dns.exception.DNSException) as error:
         output = {'status': 'failed', 'message': str(error)}
+    # configd replaces the output of a script_output action with "Execute error" on a non-zero exit,
+    # so the result, failures included, is reported in the JSON and the exit code stays 0
     print(json.dumps(output))
-    sys.exit(0 if output['status'] != 'failed' else 1)
 
 
 if __name__ == '__main__':

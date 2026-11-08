@@ -73,14 +73,14 @@ class ServiceController extends ApiMutableServiceControllerBase
                 (string)$domain->type == 'primary' &&
                 (string)$domain->dynamic == '1'
             ) {
-                $backend->configdpRun('bind dynzone.capture', [(string)$domain->domainname]);
+                $backend->configdpRun('bind dynzone capture', [(string)$domain->domainname]);
             }
         }
 
         $result = parent::reconfigureAction();
 
         if ($result['status'] == 'ok') {
-            $response = json_decode(trim($backend->configdRun('bind dynzone.reconcile')), true);
+            $response = json_decode(trim($backend->configdRun('bind dynzone reconcile')), true);
             if (!empty($response['status']) && $response['status'] == 'warning') {
                 /* named is up and configured records are applied, but conflicts wait for the operator */
                 $result['status_msg'] = $response['message'];
