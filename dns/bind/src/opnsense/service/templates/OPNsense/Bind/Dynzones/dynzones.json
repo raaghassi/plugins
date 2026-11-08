@@ -4,7 +4,8 @@
  # parameters and the enabled records configured in the GUI.
  # Own template module (OPNsense/Bind/Dynzones) so the record controller can
  # re-render it after a record change without touching named.conf or the
- # zone files; the service reconfigure renders OPNsense/Bind/* as a whole.
+ # zone files. A plain module name renders only that directory, so the
+ # service reconfigure and the boot hook render this module explicitly.
  # tojson() escapes <, >, & and ' as \uXXXX sequences, which is valid JSON.
  #}
 {% set data = {'key': {}, 'server': {}, 'zones': {}} %}

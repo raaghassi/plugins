@@ -43,7 +43,7 @@ use OPNsense\Bind\Domain;
 class ServiceController extends ApiMutableServiceControllerBase
 {
     protected static $internalServiceClass = '\OPNsense\Bind\General';
-    protected static $internalServiceTemplate = 'OPNsense/Bind/*';
+    protected static $internalServiceTemplate = 'OPNsense/Bind';
     protected static $internalServiceEnabled = 'enabled';
     protected static $internalServiceName = 'bind';
 
@@ -77,6 +77,8 @@ class ServiceController extends ApiMutableServiceControllerBase
             }
         }
 
+        /* the sub-module is not part of the OPNsense/Bind render; refresh it before named starts */
+        $backend->configdRun('template reload OPNsense/Bind/Dynzones');
         $result = parent::reconfigureAction();
 
         if ($result['status'] == 'ok') {
