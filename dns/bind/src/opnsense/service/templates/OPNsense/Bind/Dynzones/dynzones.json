@@ -2,6 +2,9 @@
  # Input for scripts/OPNsense/Bind/dynzone.py: the RNDC key, the loopback
  # endpoint of named and, for every primary zone in dynamic mode, the SOA
  # parameters and the enabled records configured in the GUI.
+ # Own template module (OPNsense/Bind/Dynzones) so the record controller can
+ # re-render it after a record change without touching named.conf or the
+ # zone files; the service reconfigure renders OPNsense/Bind/* as a whole.
  # tojson() escapes <, >, & and ' as \uXXXX sequences, which is valid JSON.
  #}
 {% set data = {'key': {}, 'server': {}, 'zones': {}} %}

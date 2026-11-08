@@ -54,6 +54,16 @@ class RecordController extends ApiMutableModelControllerBase
                 Config::getInstance()->save();
             }
         }
+        $this->refreshDynamicZones();
+    }
+
+    /**
+     * Re-render the input of the dynamic zone tooling (dynzones.json only, its own template module),
+     * so the live view and its conflict detection follow a record change before Apply.
+     */
+    private function refreshDynamicZones()
+    {
+        (new Backend())->configdRun('template reload OPNsense/Bind/Dynzones');
     }
 
     public function searchRecordAction()
@@ -238,6 +248,7 @@ class RecordController extends ApiMutableModelControllerBase
         $result = $this->validate();
         if (empty($result['validations'])) {
             $this->save(false, true);
+            $this->refreshDynamicZones();
             $result = ['result' => 'saved'];
         } else {
             $result['result'] = 'failed';

@@ -43,7 +43,7 @@ use OPNsense\Bind\Domain;
 class ServiceController extends ApiMutableServiceControllerBase
 {
     protected static $internalServiceClass = '\OPNsense\Bind\General';
-    protected static $internalServiceTemplate = 'OPNsense/Bind';
+    protected static $internalServiceTemplate = 'OPNsense/Bind/*';
     protected static $internalServiceEnabled = 'enabled';
     protected static $internalServiceName = 'bind';
 
